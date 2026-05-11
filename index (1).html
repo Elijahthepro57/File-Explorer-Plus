@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>File Explorer Plus</title>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+window.onerror = function(message, source, lineno, colno, error) {
+  alert(`Error: ${message} at ${source}:${lineno}:${colno}`);
+};
+
+let explorerData = {
+  id: 'root',
+  name: 'Root',
+  type: 'folder',
+  locked: false,
+  children: [
+    {
+      id: 'src',
+      name: 'src',
+      type: 'folder',
+      locked: false,
+      children: [
+        { id: 'index', name: 'index.ts', type: 'file', locked: false, content: 'console.log("Hello world");' },
+        { id: 'helpers', name: 'helpers.ts', type: 'file', locked: false, content: 'export const help = () => {};' },
+      ],
+    },
+    {
+      id: 'public',
+      name: 'public',
+      type: 'folder',
+      locked: false,
+      children: [
+        { id: 'index', name: 'index.txt', type: 'file', locked: false, content: 'This is a text file loaded automatically.' },
+      ],
+    },
+    { id: 'package', name: 'package.json', type: 'file', locked: false, content: '{ "name": "app" }' },
+    { id: 'tsconfig', name: 'tsconfig.json', type: 'file', locked: false, content: '{ "compilerOptions": {} }' },
+  ],
+};
+
+const expandedFolders = new Set(['root']);
+let searchQuery = '';
+
+function safeCopyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  }
+  return fallbackCopy(text);
+}
+
+function fallbackCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    alert('Copied (fallback mode)');
+  } catch (e) {
+    alert('Copy failed in this environment');
+  }
+}
+
+function findNode(node, id) {
+  if (node.id === id) return node;
+  if (!node.children) return null;
+  for (const child of node.children) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function matchesSearch(node, query) {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  if (node.name.toLowerCase().includes(q)) return true;
+  if (node.children) return node.children.some(c => matchesSearch(c, q));
+  return false;
+}
+
+function deleteNode(parent, id) {
+  if (!parent.children) return;
+  parent.children = parent.children.filter(c => c.id !== id);
+  parent.children.forEach(c => deleteNode(c, id));
+}
+
+function addImportedFile(name, content, mime = '', targetFolderId = 'root') {
+  const folder = findNode(explorerData, targetFolderId) || explorerData;
+  folder.children = folder.children || [];
+
+  folder.children.push({
+    id: Math.random().toString(36).slice(2),
+    name,
+    type: 'file',
+    locked: false,
+    content,
+    mime
+  });
+}
+
+function handleFileImport(files) {
+  Array.from(files).forEach(file => {
+    const isMedia = file.type.startsWith('image/') || file.type.startsWith('video/');
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      addImportedFile(file.name, e.target ? e.target.result : '', file.type || '');
+      render();
+    };
+
+    if (isMedia) reader.readAsDataURL(file);
+    else reader.readAsText(file);
+  });
+}
+
+function showDetails(node) {
+  const detailPane = document.getElementById('details');
+
+  let preview = '';
+
+  if (node.type === 'folder') {
+    preview = '<div>📁 Folder</div>';
+  } else if (node.mime && node.mime.startsWith('image/')) {
+    preview = `<img src="${node.content}" style="max-width:100%; border-radius:8px;" />`;
+  } else if (node.mime && node.mime.startsWith('video/')) {
+    preview = `<video controls style="max-width:100%; border-radius:8px;" src="${node.content}"></video>`;
+  } else if (node.mime && node.mime.includes('pdf')) {
+    preview = `<iframe src="${node.content}" style="width:100%; height:300px;"></iframe>`;
+  } else {
+    preview = `<pre>${node.content || 'No content'}</pre>`;
+  }
+
+  detailPane.innerHTML = `
+    <h2>${node.name}${node.locked ? ' 🔒 Locked' : ''}</h2>
+    <div><strong>Type:</strong> ${node.type}</div>
+    <div><strong>ID:</strong> ${node.id}</div>
+    <hr/>
+    ${preview}
+  `;
+}
+
+function createExplorerNode(node) {
+  if (!matchesSearch(node, searchQuery)) return null;
+
+  const item = document.createElement('div');
+  item.className = 'explorer-item';
+
+  const label = document.createElement('span');
+  label.textContent = node.name + (node.locked ? ' 🔒' : '');
+  label.className = 'explorer-label ' + node.type;
+
+  const actions = document.createElement('span');
+  actions.className = 'actions';
+
+  const lockBtn = document.createElement('button');
+  lockBtn.textContent = node.locked ? '🔓 Unlock' : '🔒 Lock';
+  lockBtn.onclick = (e) => {
+    e.stopPropagation();
+    node.locked = !node.locked;
+    render();
+  };
+
+  const delBtn = document.createElement('button');
+  delBtn.textContent = 'Del';
+  delBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (node.locked) return alert('🚫 File is locked.');
+    deleteNode(explorerData, node.id);
+    render();
+  };
+
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = 'Copy';
+  copyBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (node.locked) return alert('🚫 File is locked.');
+    safeCopyText(JSON.stringify(node, null, 2));
+  };
+
+  actions.appendChild(lockBtn);
+  actions.appendChild(delBtn);
+  actions.appendChild(copyBtn);
+
+  item.appendChild(label);
+  item.appendChild(actions);
+
+  if (node.type === 'folder') {
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ File';
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      const name = prompt('File name:');
+      if (!name) return;
+
+      node.children = node.children || [];
+      node.children.push({
+        id: Math.random().toString(36).slice(2),
+        name,
+        type: 'file',
+        locked: false,
+        content: ''
+      });
+      render();
+    };
+    actions.appendChild(addBtn);
+
+    const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'explorer-children';
+
+    const isExpanded = expandedFolders.has(node.id);
+    if (!isExpanded) childrenContainer.classList.add('collapsed');
+    label.classList.toggle('expanded', isExpanded);
+
+    label.addEventListener('click', () => {
+      if (expandedFolders.has(node.id)) expandedFolders.delete(node.id);
+      else expandedFolders.add(node.id);
+      showDetails(node);
+      render();
+    });
+
+    if (node.children) {
+      node.children.forEach(child => {
+        const el = createExplorerNode(child);
+        if (el) childrenContainer.appendChild(el);
+      });
+    }
+
+    item.appendChild(childrenContainer);
+  } else {
+    label.addEventListener('click', () => showDetails(node));
+  }
+
+  return item;
+}
+
+function render() {
+  const container = document.getElementById('app');
+  container.innerHTML = '';
+
+  const topBar = document.createElement('div');
+  topBar.style.marginBottom = '10px';
+
+  const searchInput = document.createElement('input');
+  searchInput.placeholder = '🔍 Search files...';
+  searchInput.value = searchQuery;
+  searchInput.oninput = (e) => {
+    searchQuery = e.target.value;
+    render();
+  };
+
+  const importBtn = document.createElement('button');
+  importBtn.textContent = '📁 Import Files';
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.style.display = 'none';
+
+  importBtn.onclick = () => fileInput.click();
+  fileInput.onchange = (e) => handleFileImport(e.target.files);
+
+  topBar.appendChild(searchInput);
+  topBar.appendChild(importBtn);
+  topBar.appendChild(fileInput);
+
+  const explorer = document.createElement('div');
+  explorer.id = 'file-explorer';
+
+  const rootNode = createExplorerNode(explorerData);
+  if (rootNode) explorer.appendChild(rootNode);
+
+  const details = document.createElement('div');
+  details.id = 'details';
+  details.innerHTML = '<h2>Details</h2><div>Select a file to see it\'s details.</div>';
+
+  container.appendChild(topBar);
+  container.appendChild(explorer);
+  container.appendChild(details);
+}
+
+const style = document.createElement('style');
+style.textContent = `
+  body {
+    font-family: system-ui, sans-serif;
+    display: flex;
+    gap: 20px;
+    padding: 20px;
+  }
+
+  #file-explorer {
+    width: 340px;
+    border: 1px solid #ccc;
+    padding: 10px;
+    border-radius: 8px;
+    background: #fafafafa;
+  }
+
+  .explorer-item {
+    margin-left: 10px;
+    margin-bottom: 6px;
+  }
+
+  .explorer-label {
+    cursor: pointer;
+    display: inline-block;
+    padding: 2px 5px;
+  }
+
+  .explorer-label.folder::before { content: "📁 "; }
+  .explorer-label.file::before { content: "📄 "; }
+  .explorer-label.expanded::before { content: "📂 "; }
+
+  .actions button {
+    margin-left: 5px;
+    font-size: 10px;
+  }
+
+  .explorer-children {
+    margin-left: 15px;
+    border-left: 1px dashed #ddd;
+    padding-left: 8px;
+  }
+
+  .collapsed { display: none; }
+
+  #details {
+    border: 1px solid #ddd;
+    padding: 10px;
+    border-radius: 8px;
+    min-width: 260px;
+  }
+
+  input {
+    padding: 5px;
+    margin-right: 8px;
+  }
+`;
+document.head.appendChild(style);
+render();
+</script>
+
+</body>
+</html>
